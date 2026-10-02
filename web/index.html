@@ -1,0 +1,1057 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Thompson's NFA, one character at a time</title>
+<meta name="description" content="A regex engine written in Go with Thompson's construction, compiled to WebAssembly, animating its state machine as it reads your input.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #e4e8ec; --panel: #f3f5f7; --line: #c6cdd4; --ink: #1c2329; --dim: #5f6a75;
+  --off: #dde2e7; --lamp: #e28c00; --lamp-ink: #2a1800; --lamp-glow: rgba(255, 168, 28, .55);
+  --eps: #2f6f9f; --ok: #1a9550; --bad: #cc3a2b;
+  --paper: #ece1c2; --paper-edge: #d9cba3; --paper-ink: #3a3326; --hole: #2a3239;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161b20; --panel: #1e252c; --line: #333d47; --ink: #d6dce2; --dim: #85909b;
+    --off: #262e36; --lamp: #ffb02e; --lamp-ink: #2b1800; --lamp-glow: rgba(255, 176, 46, .6);
+    --eps: #86b6d6; --ok: #5bd38f; --bad: #ff6b5b;
+    --paper: #d8caa3; --paper-edge: #bfae83; --paper-ink: #2e271b; --hole: #161b20;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161b20; --panel: #1e252c; --line: #333d47; --ink: #d6dce2; --dim: #85909b;
+  --off: #262e36; --lamp: #ffb02e; --lamp-ink: #2b1800; --lamp-glow: rgba(255, 176, 46, .6);
+  --eps: #86b6d6; --ok: #5bd38f; --bad: #ff6b5b;
+  --paper: #d8caa3; --paper-edge: #bfae83; --paper-ink: #2e271b; --hole: #161b20;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 0 20px 64px; }
+a { color: inherit; text-decoration-color: var(--lamp); text-underline-offset: 3px; }
+code, kbd { font-family: var(--mono); font-size: .92em; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+
+/* ---------- heading ---------- */
+header { padding: 48px 0 24px; max-width: 760px; }
+h1 {
+  font: 600 clamp(28px, 4.4vw, 46px)/1.08 var(--mono);
+  letter-spacing: -.025em; margin: 0 0 16px;
+}
+header p { margin: 0; color: var(--dim); font-size: 17px; max-width: 62ch; }
+
+/* ---------- the machine ---------- */
+.machine {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 18px; display: grid; gap: 16px;
+}
+.fields { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; }
+.field label { display: block; font: 500 13px/1 var(--mono); color: var(--dim); margin-bottom: 8px; }
+.field .box {
+  display: flex; align-items: center; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 12px;
+}
+.field .box:focus-within { border-color: var(--lamp); }
+.field .box span { font: 500 20px var(--mono); color: var(--dim); }
+.field input {
+  flex: 1; min-width: 0; border: 0; background: transparent; outline: none;
+  font: 500 19px/1 var(--mono); padding: 12px 4px;
+}
+.field input[aria-invalid="true"] { color: var(--bad); }
+.error { font: 13px/1.5 var(--mono); color: var(--bad); margin-top: 8px; white-space: pre; overflow-x: auto; }
+.error:empty { display: none; }
+.presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.presets > span { font: 13px var(--mono); color: var(--dim); margin-right: 4px; }
+.preset {
+  border: 1px solid var(--line); background: transparent; border-radius: 5px;
+  padding: 5px 10px; cursor: pointer; text-align: left; line-height: 1.3;
+}
+.preset:hover { border-color: var(--dim); }
+.preset code { font-size: 13px; }
+.preset small { display: block; color: var(--dim); font-size: 12px; }
+
+.graph {
+  position: relative; overflow: auto; border-radius: 6px; min-height: 180px;
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--line) 1px, transparent 1.2px);
+  background-size: 18px 18px;
+  display: flex; align-items: center;
+}
+.graph svg { display: block; margin: 0 auto; flex: none; }
+.graph.stale svg { opacity: .3; }
+
+/* graph parts */
+.edge { fill: none; stroke: var(--dim); stroke-width: 1.4; }
+.edge.eps { stroke-dasharray: 4 4; stroke-width: 1.15; }
+.edge.hot { stroke: var(--lamp); stroke-width: 2.6; stroke-dasharray: none; }
+.edge.flow { stroke: var(--eps); stroke-width: 1.8; }
+.arrowhead { fill: var(--dim); }
+.arrowhead.hot { fill: var(--lamp); }
+.arrowhead.flow { fill: var(--eps); }
+.elabel rect { fill: var(--panel); stroke: var(--line); }
+.elabel text { font: 500 12px var(--mono); fill: var(--ink); text-anchor: middle; dominant-baseline: central; }
+.elabel.hot rect { stroke: var(--lamp); fill: var(--lamp); }
+.elabel.hot text { fill: var(--lamp-ink); }
+.state .body { fill: var(--off); stroke: var(--dim); stroke-width: 1.4; transition: fill .15s, stroke .15s; }
+.state .ring { fill: none; stroke: var(--dim); stroke-width: 1.2; }
+.state text { font: 500 11px var(--mono); fill: var(--dim); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.state.junction text { font-size: 9px; }
+.state .halo { fill: var(--lamp-glow); opacity: 0; transition: opacity .2s; }
+.state.was .body { fill: color-mix(in srgb, var(--lamp) 30%, var(--off)); stroke: color-mix(in srgb, var(--lamp) 60%, var(--dim)); }
+.state.on .body { fill: var(--lamp); stroke: var(--lamp); }
+.state.on text { fill: var(--lamp-ink); font-weight: 600; }
+.state.on .ring { stroke: var(--lamp-ink); }
+.state.on .halo { opacity: 1; }
+.state.win .body { fill: var(--ok); stroke: var(--ok); }
+.state.win .halo { fill: color-mix(in srgb, var(--ok) 55%, transparent); }
+.start-arrow { stroke: var(--ink); stroke-width: 1.6; }
+.pulse { fill: var(--lamp); }
+.pulse.flow { fill: var(--eps); }
+.mini .state text { display: none; }
+
+/* paper tape */
+.tape-window {
+  position: relative; overflow: hidden; height: 128px; border-radius: 6px;
+  background: var(--bg);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.tape {
+  position: absolute; top: 14px; left: 0; display: flex; height: 100px;
+  background: var(--paper); border-top: 1px solid var(--paper-edge); border-bottom: 1px solid var(--paper-edge);
+  transition: transform .32s cubic-bezier(.3,.7,.3,1);
+}
+.frame {
+  width: 38px; flex: none; display: flex; flex-direction: column; align-items: center;
+  padding-top: 7px; gap: 2px; cursor: pointer; position: relative;
+}
+.frame.leader { cursor: default; }
+.hole { width: 7px; height: 7px; border-radius: 50%; }
+.hole.punched { background: var(--hole); }
+.hole.feed { width: 4px; height: 4px; background: var(--hole); margin: 1.5px 0; }
+.glyph { font: 600 15px/1 var(--mono); color: var(--paper-ink); margin-top: 6px; height: 16px; opacity: .35; }
+.frame.read .glyph { opacity: .9; }
+.frame.read { background: rgba(0,0,0,.05); }
+.frame.current .glyph { opacity: 1; }
+.frame.skipped .glyph { text-decoration: line-through; opacity: .3; }
+.head {
+  position: absolute; top: 6px; bottom: 6px; width: 46px; left: 50%; margin-left: -23px;
+  border: 2px solid var(--lamp); border-radius: 5px; pointer-events: none;
+  box-shadow: 0 0 0 9999px transparent;
+}
+
+/* controls */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  font: 500 13px/1 var(--mono); padding: 9px 12px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--bg);
+}
+.btn:hover:not(:disabled) { border-color: var(--dim); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn svg { width: 12px; height: 12px; fill: currentColor; }
+.btn.primary { background: var(--lamp); border-color: var(--lamp); color: var(--lamp-ink); min-width: 92px; }
+.speed { display: inline-flex; align-items: center; gap: 8px; font: 13px var(--mono); color: var(--dim); margin-left: 6px; }
+.speed input { width: 96px; accent-color: var(--lamp); }
+.verdict { margin-left: auto; display: inline-flex; align-items: center; gap: 9px; font: 600 14px var(--mono); }
+.verdict i { width: 14px; height: 14px; border-radius: 50%; background: var(--off); border: 1px solid var(--line); display: inline-block; }
+.verdict.match i { background: var(--ok); border-color: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.verdict.nomatch i { background: var(--bad); border-color: var(--bad); box-shadow: 0 0 10px var(--bad); }
+.verdict.match { color: var(--ok); }
+.verdict.nomatch { color: var(--bad); }
+.verdict.idle { color: var(--dim); font-weight: 500; }
+
+.readout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.narration { margin: 0; font-size: 15.5px; line-height: 1.65; max-width: 60ch; min-height: 5.5em; }
+.narration code { background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+.log-title { font: 500 13px var(--mono); color: var(--dim); margin: 0 0 8px; }
+.log { position: relative; overflow: auto; max-height: 250px; }
+.log-grid { position: relative; display: grid; gap: 2px; font: 10px/12px var(--mono); width: max-content; }
+.log-grid .lbl { color: var(--dim); text-align: right; padding-right: 6px; }
+.log-grid .lbl.cons { color: var(--ink); }
+.log-grid .hd { text-align: center; color: var(--dim); }
+.log-grid .c { width: 12px; height: 12px; border-radius: 2px; background: var(--off); cursor: pointer; }
+.log-grid .c.on { background: var(--lamp); }
+.log-grid .c.acc.on { background: var(--ok); }
+.log-cursor { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -1px; border: 1px solid var(--ink); border-radius: 3px; pointer-events: none; }
+.log-future { position: absolute; top: 0; bottom: 0; right: 0; background: var(--panel); opacity: .82; pointer-events: none; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 18px; font: 12px var(--mono); color: var(--dim); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend svg { overflow: visible; }
+
+/* ---------- article ---------- */
+article { max-width: 760px; margin-top: 56px; }
+article h2 { font: 600 22px/1.3 var(--mono); letter-spacing: -.01em; margin: 48px 0 12px; }
+article p { max-width: 68ch; }
+article pre {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 14px 16px; overflow-x: auto; font: 13px/1.55 var(--mono); max-width: 100%; tab-size: 4;
+}
+.figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px 18px; margin: 24px 0; max-width: 1080px; }
+.figs figure { margin: 0; }
+.figs .graph { min-height: 110px; background-size: 14px 14px; }
+.figs figcaption { font-size: 14px; color: var(--dim); margin-top: 8px; line-height: 1.5; }
+.figs figcaption code { color: var(--ink); }
+.inline-btn { font: 500 14px var(--mono); border: 1px solid var(--lamp); color: var(--ink); background: transparent; padding: 6px 12px; border-radius: 5px; cursor: pointer; }
+footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); font: 12.5px/1.6 var(--mono); color: var(--dim); }
+
+@media (max-width: 760px) {
+  main { padding: 0 14px 48px; }
+  header { padding-top: 32px; }
+  .fields, .readout { grid-template-columns: 1fr; }
+  .figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .machine { padding: 14px; }
+  .presets { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .preset { flex: none; }
+  .verdict { margin-left: 0; width: 100%; }
+  .speed { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tape, .state .body, .state .halo { transition: none; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Thompson's NFA, one character at a time</h1>
+    <p>Type a regular expression and a string. A regex engine written in Go, compiled to WebAssembly and running in this page, builds the pattern into a state machine and reads your string through it. Every lit lamp is a state the machine is in, and it can be in many at once.</p>
+  </header>
+
+  <section class="machine" aria-label="Regex state machine">
+    <div class="fields">
+      <div class="field">
+        <label for="pattern">Pattern</label>
+        <div class="box"><span aria-hidden="true">/</span><input id="pattern" spellcheck="false" autocomplete="off" autocapitalize="off" maxlength="80" aria-describedby="pattern-error"><span aria-hidden="true">/</span></div>
+        <div class="error" id="pattern-error" role="status"></div>
+      </div>
+      <div class="field">
+        <label for="input">Input string</label>
+        <div class="box"><input id="input" spellcheck="false" autocomplete="off" autocapitalize="off" maxlength="48"></div>
+      </div>
+    </div>
+
+    <div class="presets" id="presets"><span>Try</span></div>
+
+    <div class="graph" id="graph-wrap"><svg id="graph" role="img" aria-label="State machine diagram"></svg></div>
+
+    <div class="legend" aria-hidden="true">
+      <span><svg width="18" height="18"><circle cx="9" cy="9" r="8" fill="var(--off)" stroke="var(--dim)" stroke-width="1.4"/></svg>reads one character</span>
+      <span><svg width="14" height="14"><circle cx="7" cy="7" r="5.5" fill="var(--off)" stroke="var(--dim)" stroke-width="1.4"/></svg>junction, reads nothing</span>
+      <span><svg width="30" height="10"><line x1="0" y1="5" x2="30" y2="5" stroke="var(--dim)" stroke-dasharray="4 4" stroke-width="1.2"/></svg>ε, a free move</span>
+      <span><svg width="18" height="18"><circle cx="9" cy="9" r="8" fill="var(--off)" stroke="var(--dim)" stroke-width="1.4"/><circle cx="9" cy="9" r="5" fill="none" stroke="var(--dim)"/></svg>accepting state</span>
+    </div>
+
+    <div class="tape-window" id="tape-window" aria-hidden="true">
+      <div class="tape" id="tape"></div>
+      <div class="head"></div>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="b-reset" title="Back to the start (Home)"><svg viewBox="0 0 12 12"><rect x="0" y="1" width="2" height="10"/><path d="M12 1v10L3 6z"/></svg>Restart</button>
+      <button class="btn" id="b-back" title="Previous character (Left arrow)"><svg viewBox="0 0 12 12"><path d="M10 1v10L2 6z"/></svg>Back</button>
+      <button class="btn primary" id="b-play" title="Play or pause (Space)"></button>
+      <button class="btn" id="b-step" title="Next character (Right arrow)">Step<svg viewBox="0 0 12 12"><path d="M2 1v10l8-5z"/></svg></button>
+      <label class="speed">Speed <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1"><output id="speed-out">1×</output></label>
+      <div class="verdict idle" id="verdict" role="status"><i></i><span>Ready</span></div>
+    </div>
+
+    <div class="readout">
+      <p class="narration" id="narration" aria-live="polite"></p>
+      <div>
+        <p class="log-title">Lamp log: which states were lit after each character</p>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </section>
+
+  <article>
+    <h2>What you're looking at</h2>
+    <p>Each circle is a state. Large circles read exactly one character, and the label on their arrow says which. Small circles are junctions: they read nothing, and their dashed ε-arrows are moves the machine may take for free. The machine starts at the state with the arrow coming in from nowhere. When the input runs out, the string matches if the double circle is lit.</p>
+    <p>The engine anchors at both ends, so the whole string has to match. Wrap a pattern in <code>.*( … ).*</code> to search inside a longer string instead.</p>
+
+    <h2>Building the machine</h2>
+    <p>Ken Thompson described this construction in 1968. It compiles a pattern bottom-up, and each piece becomes a fragment: a start state plus a list of arrows that don't point anywhere yet. Every operator does the same small thing. It makes a state or two, then aims the loose arrows. Here is what each operator produces on its own, drawn by the same engine as the machine above.</p>
+    <div class="figs" id="figs"></div>
+    <p>This is the whole of <code>*</code>, from <code>nfa.go</code>. The call to <code>e.patch(s.ID)</code> aims every loose arrow of the inner fragment back at the new junction, and that is the loop.</p>
+<pre><code>case nStar:
+	e := b.build(n.left)
+	s := b.newState(KindSplit)
+	s.Out = e.start
+	e.patch(s.ID)
+	return frag{s.ID, []*int{&amp;s.Out1}}</code></pre>
+
+    <h2>Running it without guessing</h2>
+    <p>A backtracking engine follows one path at a time. When a guess fails it rewinds and tries the next one, and on patterns like <code>(x+x+)+y</code> the number of ways to split the input grows exponentially. Thompson's simulation never guesses. It carries the set of every state the machine could be in, and each character turns that set into the next one. A state enters the set at most once per character, so matching takes time proportional to the length of the input times the number of states, whatever the pattern is. Go's own <code>regexp</code> package is built on the same guarantee.</p>
+<pre><code>for _, id := range clist {
+	s := n.States[id]
+	if s.consumes(r) {
+		nlist = m.add(nlist, s.Out, -1) // add follows ε-arrows too
+	}
+}
+clist, nlist = nlist, clist</code></pre>
+    <p>Watch the set stay small on the classic trap. Twenty x's with no y takes a backtracker millions of steps; here it is twenty steps, each touching a handful of states.</p>
+    <p><button class="inline-btn" id="load-trap">Load the backtracking trap</button></p>
+
+    <h2>The source</h2>
+    <p>The engine is a few hundred lines of Go with no dependencies: a recursive-descent parser, the construction, the simulation, and tests that check 3,000 random patterns against Go's <code>regexp</code> package. This page runs that exact code. Read it at <a href="https://github.com/swayam5342/thompson">github.com/swayam5342/thompson</a>.</p>
+  </article>
+
+  <footer id="footer">Loading the engine.</footer>
+</main>
+
+<script src="vendor/dagre.min.js"></script>
+<script src="wasm_exec.js"></script>
+<!--WASM-->
+<script>
+"use strict";
+
+/* =====================================================================
+   Engine access. The real engine is Go compiled to WebAssembly. If this
+   host can't run WebAssembly, a line-for-line JavaScript port of the Go
+   code takes over so the page still works; the footer says which ran.
+   ===================================================================== */
+
+const JsEngine = (() => {
+  const PERL = { d: [[48, 57]], w: [[48, 57], [65, 90], [95, 95], [97, 122]], s: [[9, 10], [12, 13], [32, 32]] };
+  const MAXR = 0x10ffff, MAX_STATES = 20000;
+  class SyntaxErr extends Error { constructor(msg, pos) { super(msg); this.pos = pos; } }
+  const cp = (c) => c.codePointAt(0);
+  const chr = (r) => String.fromCodePoint(r);
+
+  function complement(rs) {
+    const s = [...rs].sort((a, b) => a[0] - b[0]); const out = []; let next = 0;
+    for (const [lo, hi] of s) { if (lo > next) out.push([next, lo - 1]); if (hi + 1 > next) next = hi + 1; }
+    if (next <= MAXR) out.push([next, MAXR]);
+    return out;
+  }
+
+  function parse(pattern) {
+    const src = Array.from(pattern); let pos = 0;
+    const more = () => pos < src.length, peek = () => src[pos];
+    const err = (p, m) => { throw new SyntaxErr(m, p); };
+    function alt() { let l = concat(); while (more() && peek() === "|") { pos++; l = { k: "alt", l, r: concat() }; } return l; }
+    function concat() {
+      let res = null;
+      while (more() && peek() !== "|" && peek() !== ")") { const n = repeat(); res = res ? { k: "cat", l: res, r: n } : n; }
+      return res || { k: "empty" };
+    }
+    function repeat() {
+      let n = atom();
+      while (more()) {
+        const c = peek();
+        if (c === "*") n = { k: "star", l: n }; else if (c === "+") n = { k: "plus", l: n };
+        else if (c === "?") n = { k: "quest", l: n }; else return n;
+        pos++;
+      }
+      return n;
+    }
+    function atom() {
+      const start = pos, c = peek();
+      switch (c) {
+        case "(": { pos++; const inner = alt(); if (!more() || peek() !== ")") err(start, "missing ')' for this '('"); pos++; return inner; }
+        case "*": case "+": case "?": err(start, `nothing before '${c}' to repeat`);
+        case ".": pos++; return { k: "any" };
+        case "[": return { k: "class", cls: klass() };
+        case "\\": { const e = escape(); if (e.cls) { e.cls.label = src.slice(start, pos).join(""); return { k: "class", cls: e.cls }; } return { k: "lit", r: e.r }; }
+      }
+      pos++; return { k: "lit", r: cp(c) };
+    }
+    function escape() {
+      const start = pos; pos++;
+      if (!more()) err(start, "trailing backslash");
+      const c = peek(); pos++;
+      switch (c) {
+        case "n": return { r: 10 }; case "t": return { r: 9 }; case "r": return { r: 13 };
+        case "d": case "D": case "w": case "W": case "s": case "S":
+          return { cls: { ranges: PERL[c.toLowerCase()], negate: c !== c.toLowerCase(), label: "" } };
+      }
+      if (/[\p{L}\p{Nd}]/u.test(c)) err(start, `unknown escape '\\${c}'`);
+      return { r: cp(c) };
+    }
+    function klass() {
+      const start = pos; pos++;
+      const cls = { ranges: [], negate: false, label: "" };
+      if (more() && peek() === "^") { cls.negate = true; pos++; }
+      let first = true;
+      for (;;) {
+        if (!more()) err(start, "missing ']' for this '['");
+        if (peek() === "]" && !first) { pos++; break; }
+        first = false;
+        const a = classAtom();
+        if (a.ranges) { cls.ranges.push(...a.ranges); continue; }
+        const lo = a.r; let hi = lo;
+        if (pos + 1 < src.length && peek() === "-" && src[pos + 1] !== "]") {
+          const dash = pos; pos++;
+          const b = classAtom();
+          if (b.ranges) err(dash, "a range can't end in a class escape");
+          hi = b.r;
+          if (hi < lo) err(dash, `range ${chr(lo)}-${chr(hi)} is backwards`);
+        }
+        cls.ranges.push([lo, hi]);
+      }
+      cls.label = src.slice(start, pos).join("");
+      return cls;
+    }
+    function classAtom() {
+      if (peek() !== "\\") { const r = cp(peek()); pos++; return { r }; }
+      const e = escape();
+      if (!e.cls) return { r: e.r };
+      return { ranges: e.cls.negate ? complement(e.cls.ranges) : e.cls.ranges };
+    }
+    const n = alt();
+    if (more()) err(pos, "unmatched ')'");
+    return n;
+  }
+
+  function compile(pattern) {
+    const ast = parse(pattern), states = [];
+    const ns = (kind) => { const s = { id: states.length, kind, r: 0, cls: null, out: -1, out1: -1 }; states.push(s); return s; };
+    const patch = (f, t) => { for (const [s, k] of f.out) s[k] = t; };
+    const KIND = { lit: "rune", any: "any", class: "class" };
+    function build(n) {
+      switch (n.k) {
+        case "lit": case "any": case "class": { const s = ns(KIND[n.k]); s.r = n.r || 0; s.cls = n.cls || null; return { start: s.id, out: [[s, "out"]] }; }
+        case "empty": { const s = ns("empty"); return { start: s.id, out: [[s, "out"]] }; }
+        case "cat": { const a = build(n.l), b = build(n.r); patch(a, b.start); return { start: a.start, out: b.out }; }
+        case "alt": { const a = build(n.l), b = build(n.r); const s = ns("split"); s.out = a.start; s.out1 = b.start; return { start: s.id, out: [...a.out, ...b.out] }; }
+        case "star": { const e = build(n.l); const s = ns("split"); s.out = e.start; patch(e, s.id); return { start: s.id, out: [[s, "out1"]] }; }
+        case "plus": { const e = build(n.l); const s = ns("split"); s.out = e.start; patch(e, s.id); return { start: e.start, out: [[s, "out1"]] }; }
+        case "quest": { const e = build(n.l); const s = ns("split"); s.out = e.start; return { start: s.id, out: [...e.out, [s, "out1"]] }; }
+      }
+    }
+    const f = build(ast), acc = ns("match");
+    patch(f, acc.id);
+    if (states.length > MAX_STATES) throw new Error(`regex: pattern ${JSON.stringify(pattern)} needs ${states.length} states, limit is ${MAX_STATES}`);
+    // renumber depth-first from the start state
+    const newID = new Array(states.length).fill(-1), order = [], stack = [f.start];
+    while (stack.length) {
+      const id = stack.pop();
+      if (id < 0 || newID[id] >= 0) continue;
+      newID[id] = order.length; const s = states[id]; order.push(s); stack.push(s.out1, s.out);
+    }
+    const remap = (id) => (id < 0 ? -1 : newID[id]);
+    const start = remap(f.start), accept = remap(acc.id); // before ids are rewritten below
+    for (const s of order) { s.id = remap(s.id); s.out = remap(s.out); s.out1 = remap(s.out1); }
+    return { pattern, states: order, start, accept };
+  }
+
+  const displayRune = (r) => ({ 32: "␣", 10: "\\n", 9: "\\t", 13: "\\r" }[r] ?? chr(r));
+  function label(s) {
+    if (s.kind === "rune") return displayRune(s.r);
+    if (s.kind === "any") return ".";
+    if (s.kind === "class") return s.cls.label;
+    return "ε";
+  }
+  function consumes(s, r) {
+    if (s.kind === "rune") return s.r === r;
+    if (s.kind === "any") return r !== 10;
+    if (s.kind === "class") { const inR = s.cls.ranges.some(([lo, hi]) => lo <= r && r <= hi); return inR !== s.cls.negate; }
+    return false;
+  }
+
+  function graph(n) {
+    const g = { pattern: n.pattern, start: n.start, accept: n.accept, nodes: [], edges: [] };
+    for (const s of n.states) {
+      const node = { id: s.id, kind: s.kind };
+      if (s.id === n.start) node.start = true;
+      if (s.id === n.accept) node.accept = true;
+      g.nodes.push(node);
+      const eps = s.kind === "split" || s.kind === "empty";
+      [s.out, s.out1].forEach((to, slot) => { if (to >= 0) g.edges.push({ id: s.id * 2 + slot, from: s.id, to, label: label(s), epsilon: eps }); });
+    }
+    return g;
+  }
+
+  function trace(n, input) {
+    const mark = new Array(n.states.length).fill(-1); let gen = 0, eps = [];
+    const add = (list, id, via) => {
+      if (id < 0 || mark[id] === gen) return;
+      mark[id] = gen; if (via >= 0) eps.push(via); list.push(id);
+      const s = n.states[id];
+      if (s.kind === "split") { add(list, s.out, id * 2); add(list, s.out1, id * 2 + 1); }
+      else if (s.kind === "empty") add(list, s.out, id * 2);
+    };
+    const t = { pattern: n.pattern, input: [], steps: [], matched: false, deadAt: -1 };
+    let clist = []; add(clist, n.start, -1);
+    t.steps.push({ pos: -1, rune: "", fired: [], eps, active: [...clist] }); eps = [];
+    let pos = 0;
+    for (const ch of input) {
+      t.input.push(ch);
+      if (t.deadAt >= 0) { pos++; continue; }
+      gen++; const nlist = [], fired = [], r = cp(ch);
+      for (const id of clist) { const s = n.states[id]; if (consumes(s, r)) { fired.push(id * 2); add(nlist, s.out, -1); } }
+      clist = nlist;
+      t.steps.push({ pos, rune: ch, fired, eps, active: [...clist] }); eps = [];
+      if (!clist.length) t.deadAt = pos;
+      pos++;
+    }
+    if (t.deadAt < 0) t.matched = clist.includes(n.accept);
+    return t;
+  }
+
+  function run(pattern, input) {
+    let n;
+    try { n = compile(pattern); }
+    catch (e) { return { error: e.message, pos: e instanceof SyntaxErr ? e.pos : -1 }; }
+    const out = { graph: graph(n), pos: 0 };
+    if (input !== undefined) out.trace = trace(n, input);
+    return out;
+  }
+  return { compile: (p) => run(p), trace: (p, s) => run(p, s) };
+})();
+
+function normalize(res) {
+  if (res.graph) res.graph.edges = res.graph.edges || [];
+  if (res.trace) {
+    res.trace.input = res.trace.input || [];
+    for (const s of res.trace.steps) { s.fired = s.fired || []; s.eps = s.eps || []; s.active = s.active || []; }
+  }
+  return res;
+}
+
+let engine = null, engineName = "";
+
+async function loadEngine() {
+  try {
+    if (typeof Go === "undefined" || typeof WebAssembly === "undefined") throw new Error("no WebAssembly support");
+    let bytes;
+    if (window.THOMPSON_WASM_GZ) {
+      const bin = Uint8Array.from(atob(window.THOMPSON_WASM_GZ), (c) => c.charCodeAt(0));
+      const stream = new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"));
+      bytes = await new Response(stream).arrayBuffer();
+    } else {
+      const res = await fetch(window.THOMPSON_WASM_URL || "main.wasm");
+      if (!res.ok) throw new Error("main.wasm: HTTP " + res.status);
+      bytes = await res.arrayBuffer();
+    }
+    const go = new Go();
+    const { instance } = await WebAssembly.instantiate(bytes, go.importObject);
+    go.run(instance);
+    for (let i = 0; i < 50 && !globalThis.thompson; i++) await new Promise((r) => setTimeout(r, 10));
+    if (!globalThis.thompson) throw new Error("Go runtime did not start");
+    engine = {
+      compile: (p) => normalize(JSON.parse(globalThis.thompson.compile(p))),
+      trace: (p, s) => normalize(JSON.parse(globalThis.thompson.trace(p, s))),
+    };
+    engineName = "Running the Go engine, compiled to WebAssembly.";
+  } catch (e) {
+    console.warn("Falling back to the JavaScript port:", e);
+    engine = { compile: (p) => normalize(JsEngine.compile(p)), trace: (p, s) => normalize(JsEngine.trace(p, s)) };
+    engineName = "This host can't run WebAssembly, so the page is using a JavaScript port of the Go engine.";
+  }
+}
+
+/* =====================================================================
+   Drawing the graph
+   ===================================================================== */
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const $ = (s) => document.querySelector(s);
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const isJunction = (n) => n.kind === "split" || n.kind === "empty";
+const radius = (n, mini) => (isJunction(n) ? (mini ? 7 : 11) : mini ? 12 : 17);
+const labelWidth = (s) => Array.from(s).length * 7.4 + 12;
+
+function layoutGraph(graph, mini) {
+  const g = new dagre.graphlib.Graph({ multigraph: true });
+  g.setGraph({ rankdir: "LR", nodesep: mini ? 12 : 20, ranksep: mini ? 18 : 30, edgesep: 10, marginx: mini ? 22 : 34, marginy: mini ? 12 : 22 });
+  g.setDefaultEdgeLabel(() => ({}));
+  for (const n of graph.nodes) { const r = radius(n, mini); g.setNode(String(n.id), { width: 2 * r, height: 2 * r }); }
+  for (const e of graph.edges) {
+    const lab = e.epsilon ? { width: 0, height: 0 } : { width: labelWidth(e.label), height: 18, labelpos: "c" };
+    g.setEdge(String(e.from), String(e.to), lab, String(e.id));
+  }
+  dagre.layout(g);
+  const nodes = new Map(), edges = new Map();
+  for (const n of graph.nodes) { const d = g.node(String(n.id)); nodes.set(n.id, { x: d.x, y: d.y, r: radius(n, mini) }); }
+  for (const e of graph.edges) { const d = g.edge(String(e.from), String(e.to), String(e.id)); edges.set(e.id, { points: d.points, x: d.x, y: d.y }); }
+  const gg = g.graph();
+  return { width: gg.width, height: gg.height, nodes, edges };
+}
+
+function edgePath(points, a, b) {
+  const p = points.map((q) => ({ x: q.x, y: q.y }));
+  const clip = (c, toward, r) => {
+    const dx = toward.x - c.x, dy = toward.y - c.y, L = Math.hypot(dx, dy) || 1;
+    return { x: c.x + (dx / L) * r, y: c.y + (dy / L) * r };
+  };
+  p[0] = clip(a, p.length > 2 ? p[1] : b, a.r);
+  p[p.length - 1] = clip(b, p.length > 2 ? p[p.length - 2] : a, b.r + 2);
+  const f = (v) => v.toFixed(1);
+  if (p.length < 3) return `M${f(p[0].x)},${f(p[0].y)}L${f(p[1].x)},${f(p[1].y)}`;
+  let d = `M${f(p[0].x)},${f(p[0].y)}`;
+  for (let i = 0; i < p.length - 1; i++) {
+    const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2;
+    d += `C${f(p1.x + (p2.x - p0.x) / 6)},${f(p1.y + (p2.y - p0.y) / 6)} ${f(p2.x - (p3.x - p1.x) / 6)},${f(p2.y - (p3.y - p1.y) / 6)} ${f(p2.x)},${f(p2.y)}`;
+  }
+  return d;
+}
+
+let svgSeq = 0;
+function drawGraph(svg, graph, mini) {
+  const lay = layoutGraph(graph, mini);
+  const pfx = "g" + ++svgSeq;
+  svg.innerHTML = "";
+  svg.setAttribute("viewBox", `0 0 ${lay.width} ${lay.height}`);
+  svg.dataset.w = lay.width; svg.dataset.h = lay.height;
+  if (mini) svg.classList.add("mini");
+
+  const defs = el("defs", {}, svg);
+  for (const kind of ["", "hot", "flow"]) {
+    const m = el("marker", { id: `${pfx}-a${kind}`, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: "userSpaceOnUse", orient: "auto" }, defs);
+    el("path", { d: "M0,1 L10,5 L0,9 z", class: "arrowhead " + kind }, m);
+  }
+  const blur = el("filter", { id: `${pfx}-glow`, x: "-60%", y: "-60%", width: "220%", height: "220%" }, defs);
+  el("feGaussianBlur", { stdDeviation: 5 }, blur);
+
+  const gEdges = el("g", {}, svg), gLabels = el("g", {}, svg), gNodes = el("g", {}, svg), gPulse = el("g", {}, svg);
+  const edgeEls = new Map(), nodeEls = new Map();
+
+  for (const e of graph.edges) {
+    const L = lay.edges.get(e.id);
+    const path = el("path", { d: edgePath(L.points, lay.nodes.get(e.from), lay.nodes.get(e.to)), class: "edge" + (e.epsilon ? " eps" : ""), "marker-end": `url(#${pfx}-a)` }, gEdges);
+    let label = null;
+    if (!e.epsilon) {
+      const w = labelWidth(e.label);
+      label = el("g", { class: "elabel", transform: `translate(${L.x},${L.y})` }, gLabels);
+      el("rect", { x: -w / 2, y: -9, width: w, height: 18, rx: 4 }, label);
+      el("text", {}, label).textContent = e.label;
+    }
+    edgeEls.set(e.id, { e, path, label });
+  }
+  for (const n of graph.nodes) {
+    const P = lay.nodes.get(n.id);
+    const g = el("g", { class: "state" + (isJunction(n) ? " junction" : ""), transform: `translate(${P.x},${P.y})` }, gNodes);
+    if (!mini) el("circle", { r: P.r + 9, class: "halo", filter: `url(#${pfx}-glow)` }, g);
+    el("circle", { r: P.r, class: "body" }, g);
+    if (n.accept) el("circle", { r: P.r - 4, class: "ring" }, g);
+    el("text", {}, g).textContent = n.id;
+    nodeEls.set(n.id, g);
+    if (n.start) el("line", { x1: -P.r - (mini ? 18 : 28), y1: 0, x2: -P.r - 2, y2: 0, class: "start-arrow", "marker-end": `url(#${pfx}-a)` }, g);
+  }
+  return { lay, pfx, edgeEls, nodeEls, gPulse };
+}
+
+function fitSvg(svg, wrap, opts = {}) {
+  const w = +svg.dataset.w, h = +svg.dataset.h;
+  const avail = wrap.clientWidth - 8;
+  let s = Math.min(opts.max || 1.35, avail / w);
+  if (opts.maxH && h * s > opts.maxH) s = opts.maxH / h;
+  s = Math.max(opts.min || 0.6, s);
+  svg.setAttribute("width", Math.round(w * s));
+  svg.setAttribute("height", Math.round(h * s));
+}
+
+/* =====================================================================
+   The player
+   ===================================================================== */
+
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const S = { res: null, view: null, step: 0, playing: false, speed: 1, anim: null, hold: null };
+const steps = () => S.res.trace.steps;
+const last = () => steps().length - 1;
+
+function setLamps(active, cls = "on") {
+  const on = new Set(active);
+  for (const [id, g] of S.view.nodeEls) { g.classList.toggle(cls, on.has(id)); }
+}
+
+function clearMotion() {
+  for (const { path, label } of S.view.edgeEls.values()) {
+    path.classList.remove("hot", "flow");
+    path.setAttribute("marker-end", `url(#${S.view.pfx}-a)`);
+    if (label) label.classList.remove("hot");
+  }
+  S.view.gPulse.innerHTML = "";
+  for (const g of S.view.nodeEls.values()) g.classList.remove("was", "win");
+}
+
+function stopAnim() {
+  if (S.anim) { cancelAnimationFrame(S.anim.raf); const r = S.anim.resolve; S.anim = null; r(false); }
+}
+function stopAll() {
+  S.playing = false;
+  if (S.hold) { clearTimeout(S.hold.t); S.hold.resolve(false); S.hold = null; }
+  stopAnim();
+  updateButtons();
+}
+
+function showStep(i) {
+  stopAnim();
+  S.step = i;
+  clearMotion();
+  setLamps(steps()[i].active);
+  if (i === last() && S.res.trace.matched) S.view.nodeEls.get(S.res.graph.accept).classList.add("win");
+  updateTape(i); updateNarration(i); updateLog(i); updateVerdict(i); updateButtons();
+}
+
+function edgeMarker(id, kind) {
+  const { path, label } = S.view.edgeEls.get(id);
+  path.classList.toggle("hot", kind === "hot");
+  path.classList.toggle("flow", kind === "flow");
+  path.setAttribute("marker-end", `url(#${S.view.pfx}-a${kind || ""})`);
+  if (label) label.classList.toggle("hot", kind === "hot");
+}
+
+// Animate the transition into step i (from i-1, or from nothing for i = 0).
+function animateTo(i) {
+  stopAnim();
+  if (reduceMotion) { showStep(i); return Promise.resolve(true); }
+  const st = steps()[i], prev = i > 0 ? steps()[i - 1] : null;
+  const G = S.res.graph, edgeById = new Map(G.edges.map((e) => [e.id, e]));
+  S.step = i;
+  clearMotion();
+  updateTape(i); updateNarration(i); updateLog(i); updateVerdict(i, true); updateButtons();
+
+  const T = 1000 / S.speed;
+  const F = prev ? 0.42 * T : 0;
+  const events = [], dots = [];
+
+  if (prev) {
+    setLamps([]); setLamps(prev.active, "was");
+    for (const id of st.fired) {
+      const e = edgeById.get(id);
+      edgeMarker(id, "hot");
+      dots.push({ id, t0: 0, t1: F, cls: "pulse" });
+      events.push({ t: F, fn: () => { S.view.nodeEls.get(e.to).classList.add("on"); edgeMarker(id, ""); } });
+    }
+    events.push({ t: F, fn: () => { for (const g of S.view.nodeEls.values()) g.classList.remove("was"); } });
+  } else {
+    setLamps([G.start]);
+  }
+
+  // ε-closure spreads outward in waves; depth = number of ε hops.
+  const depth = new Map();
+  if (prev) for (const id of st.fired) depth.set(edgeById.get(id).to, 0); else depth.set(G.start, 0);
+  let maxD = 0;
+  const epsPlan = st.eps.map((id) => {
+    const e = edgeById.get(id), d = (depth.get(e.from) ?? 0) + 1;
+    depth.set(e.to, d); maxD = Math.max(maxD, d);
+    return { id, e, d };
+  });
+  const W = maxD ? Math.min(0.2 * T, (0.55 * T) / maxD) : 0;
+  for (const { id, e, d } of epsPlan) {
+    const t0 = F + (d - 1) * W, t1 = F + d * W;
+    events.push({ t: t0, fn: () => edgeMarker(id, "flow") });
+    dots.push({ id, t0, t1, cls: "pulse flow" });
+    events.push({ t: t1, fn: () => S.view.nodeEls.get(e.to).classList.add("on") });
+  }
+  const end = F + maxD * W + (st.active.length ? 140 : 0.25 * T);
+  events.sort((a, b) => a.t - b.t);
+
+  for (const d of dots) { d.path = S.view.edgeEls.get(d.id).path; d.len = d.path.getTotalLength(); }
+
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    let ei = 0;
+    const frame = (now) => {
+      const t = now - t0;
+      while (ei < events.length && events[ei].t <= t) events[ei++].fn();
+      for (const d of dots) {
+        if (t < d.t0 || t > d.t1) { if (d.c) { d.c.remove(); d.c = null; } continue; }
+        if (!d.c) d.c = el("circle", { r: 4.5, class: d.cls }, S.view.gPulse);
+        const p = d.path.getPointAtLength(d.len * Math.min(1, (t - d.t0) / Math.max(1, d.t1 - d.t0)));
+        d.c.setAttribute("cx", p.x); d.c.setAttribute("cy", p.y);
+      }
+      if (t >= end) { S.anim = null; showStep(i); resolve(true); return; }
+      S.anim.raf = requestAnimationFrame(frame);
+    };
+    S.anim = { raf: requestAnimationFrame(frame), resolve };
+  });
+}
+
+function hold(ms) {
+  return new Promise((resolve) => { S.hold = { t: setTimeout(() => { S.hold = null; resolve(true); }, ms), resolve }; });
+}
+
+async function play() {
+  if (!S.res || !S.res.trace) return;
+  if (S.step >= last()) { showStep(0); }
+  S.playing = true; updateButtons();
+  if (S.step === 0 && !S.anim) { if (!(await animateTo(0))) return; if (!S.playing) return; await hold(350 / S.speed); }
+  while (S.playing && S.step < last()) {
+    const ok = await animateTo(S.step + 1);
+    if (!ok || !S.playing) return;
+    if (S.step < last() && !(await hold(380 / S.speed))) return;
+  }
+  S.playing = false; updateButtons();
+}
+
+/* ---------- tape ---------- */
+const LEAD = 40, CELL = 38;
+const shown = (ch) => ({ " ": "␣", "\n": "\\n", "\t": "\\t", "\r": "\\r" }[ch] ?? ch);
+function buildTape() {
+  const tape = $("#tape"); tape.innerHTML = "";
+  const input = S.res && S.res.trace ? S.res.trace.input : [];
+  const frame = (ch, k) => {
+    const f = document.createElement("div");
+    f.className = "frame" + (ch === null ? " leader" : "");
+    const bits = ch === null ? 0 : ch.codePointAt(0) & 0xff;
+    // 8-level tape: channels 8..4, the small feed hole, then channels 3..1
+    for (const b of [7, 6, 5, 4, 3, -1, 2, 1, 0]) {
+      const h = document.createElement("i");
+      h.className = b < 0 ? "hole feed" : "hole" + (bits >> b & 1 ? " punched" : "");
+      f.appendChild(h);
+    }
+    const g = document.createElement("span"); g.className = "glyph"; g.textContent = ch === null ? "" : shown(ch);
+    f.appendChild(g);
+    if (ch !== null) { f.dataset.k = k; f.title = `Jump to after character ${k + 1}`; }
+    tape.appendChild(f);
+  };
+  for (let i = 0; i < LEAD; i++) frame(null);
+  input.forEach((ch, k) => frame(ch, k));
+  for (let i = 0; i < LEAD; i++) frame(null);
+}
+function updateTape(i) {
+  const tape = $("#tape"), win = $("#tape-window");
+  const pos = i - 1; // index of the character just read
+  const x = win.clientWidth / 2 - (LEAD + pos + 0.5) * CELL;
+  tape.style.transform = `translateX(${x}px)`;
+  const tr = S.res.trace, dead = tr.deadAt >= 0 && i === last();
+  tape.querySelectorAll(".frame[data-k]").forEach((f) => {
+    const k = +f.dataset.k;
+    f.classList.toggle("read", k <= pos);
+    f.classList.toggle("current", k === pos);
+    f.classList.toggle("skipped", dead && k > tr.deadAt);
+  });
+}
+
+/* ---------- narration ---------- */
+function listIds(ids) {
+  if (ids.length === 1) return String(ids[0]);
+  return ids.slice(0, -1).join(", ") + " and " + ids[ids.length - 1];
+}
+function setText(ids) { return ids.length ? `{${[...ids].sort((a, b) => a - b).join(", ")}}` : "{}"; }
+function updateNarration(i) {
+  const tr = S.res.trace, G = S.res.graph, st = tr.steps[i], n = tr.input.length;
+  const kind = new Map(G.nodes.map((x) => [x.id, x.kind]));
+  const reads = (id) => ["rune", "any", "class"].includes(kind.get(id));
+  const q = (ch) => `<code>${escapeHTML(shown(ch))}</code>`;
+  const endText = () => tr.matched
+    ? ` That was the last character, and accepting state ${G.accept} is lit, so the string matches.`
+    : ` That was the last character, and accepting state ${G.accept} is dark, so there is no match.`;
+  let s;
+  if (i === 0) {
+    const a = st.active.length;
+    s = a === 1
+      ? `Before reading anything, the machine starts in state ${G.start}. No ε-arrows lead out of it, so that is the only lamp lit.`
+      : `Before reading anything, the machine starts in state ${G.start} and takes every ε-arrow it can reach for free. It is now in ${a} states at once: ${setText(st.active)}.`;
+    if (n === 0) s += tr.matched ? ` The input is empty and accepting state ${G.accept} is already lit, so the empty string matches.` : ` The input is empty and accepting state ${G.accept} is dark, so there is no match.`;
+  } else {
+    const prev = tr.steps[i - 1], from = st.fired.map((e) => e >> 1), ch = q(st.rune);
+    s = `Read ${ch}, character ${st.pos + 1} of ${n}. `;
+    if (!st.active.length) {
+      s += `None of the lit states has an arrow for ${ch}, so every lamp goes out. An empty set can never light up again, so the input is rejected without reading the rest.`;
+    } else {
+      s += from.length === 1 ? `State ${from[0]} has an arrow for ${ch} and moves along it.` : `States ${listIds(from)} have arrows for ${ch} and all move along them together.`;
+      const dark = prev.active.filter((id) => reads(id) && !from.includes(id));
+      if (dark.length) s += ` ${dark.length === 1 ? "State" : "States"} ${listIds(dark)} can't read ${ch} and ${dark.length === 1 ? "goes" : "go"} dark.`;
+      s += st.eps.length ? ` After following ε-arrows, the machine is in ${setText(st.active)}.` : ` The machine is now in ${setText(st.active)}.`;
+      if (i === last()) s += endText();
+    }
+  }
+  $("#narration").innerHTML = s;
+}
+function escapeHTML(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+/* ---------- lamp log ---------- */
+const LOG_LBL = 30, LOG_CELL = 14;
+function buildLog() {
+  const log = $("#log"), tr = S.res.trace, G = S.res.graph;
+  const cols = tr.steps.length;
+  const grid = document.createElement("div");
+  grid.className = "log-grid";
+  grid.style.gridTemplateColumns = `${LOG_LBL - 2}px repeat(${cols}, 12px)`;
+  const sets = tr.steps.map((s) => new Set(s.active));
+  let html = `<div></div><div class="hd" title="start">·</div>`;
+  for (let c = 1; c < cols; c++) html += `<div class="hd">${escapeHTML(shown(tr.steps[c].rune))}</div>`;
+  for (const n of G.nodes) {
+    html += `<div class="lbl${isJunction(n) ? "" : " cons"}">${n.id}</div>`;
+    for (let c = 0; c < cols; c++) html += `<div class="c${sets[c].has(n.id) ? " on" : ""}${n.accept ? " acc" : ""}" data-s="${c}"></div>`;
+  }
+  grid.innerHTML = html + `<div class="log-future"></div><div class="log-cursor"></div>`;
+  log.innerHTML = ""; log.appendChild(grid);
+}
+function updateLog(i) {
+  const fut = $("#log .log-future"), cur = $("#log .log-cursor");
+  if (!fut) return;
+  const x = LOG_LBL + i * LOG_CELL;
+  cur.style.left = x + "px";
+  fut.style.left = x + LOG_CELL - 1 + "px";
+}
+
+/* ---------- verdict, buttons ---------- */
+function updateVerdict(i, running) {
+  const v = $("#verdict"), tr = S.res.trace, n = tr.input.length;
+  let cls = "idle", txt;
+  if (i === last() && !running) { cls = tr.matched ? "match" : "nomatch"; txt = tr.matched ? "Match" : "No match"; }
+  else if (i === last()) { txt = "Finishing"; }
+  else txt = i === 0 ? `Ready, ${n} character${n === 1 ? "" : "s"} to read` : `Read ${i} of ${n}`;
+  v.className = "verdict " + cls; v.querySelector("span").textContent = txt;
+}
+const ICON_PLAY = '<svg viewBox="0 0 12 12"><path d="M2 1v10l9-5z"/></svg>Play';
+const ICON_PAUSE = '<svg viewBox="0 0 12 12"><rect x="1.5" y="1" width="3" height="10"/><rect x="7.5" y="1" width="3" height="10"/></svg>Pause';
+function updateButtons() {
+  const ok = !!(S.res && S.res.trace);
+  const atEnd = ok && S.step >= last();
+  $("#b-play").innerHTML = S.playing ? ICON_PAUSE : atEnd ? ICON_PLAY.replace("Play", "Replay") : ICON_PLAY;
+  $("#b-play").disabled = !ok;
+  $("#b-back").disabled = !ok || S.step === 0;
+  $("#b-reset").disabled = !ok || (S.step === 0 && !S.playing);
+  $("#b-step").disabled = !ok || atEnd;
+}
+
+/* =====================================================================
+   Wiring
+   ===================================================================== */
+
+function compileAndShow({ autoplay } = {}) {
+  stopAll();
+  const p = $("#pattern").value, s = $("#input").value;
+  const res = engine.trace(p, s);
+  const err = $("#pattern-error"), wrap = $("#graph-wrap");
+  if (res.error) {
+    $("#pattern").setAttribute("aria-invalid", "true");
+    err.textContent = res.pos >= 0 ? `${p}\n${" ".repeat(res.pos)}^ ${res.error}` : res.error;
+    wrap.classList.add("stale");
+    return;
+  }
+  $("#pattern").removeAttribute("aria-invalid");
+  err.textContent = "";
+  wrap.classList.remove("stale");
+  S.res = res;
+  S.view = drawGraph($("#graph"), res.graph, false);
+  fitSvg($("#graph"), wrap, { maxH: 470, max: 1.6 });
+  buildTape(); buildLog();
+  showStep(0);
+  history.replaceState(null, "", "#" + new URLSearchParams({ p, s }).toString());
+  if (autoplay && !reduceMotion) setTimeout(play, 450);
+}
+
+const PRESETS = [
+  ["(a|b)*abb", "babaabb", "the textbook example"],
+  ["colou?r", "colour", "optional letter"],
+  ["(0|1(01*0)*1)*", "1001", "binary multiples of 3"],
+  ["[a-z]+@[a-z]+\\.(com|org)", "ken@bell.com", "classes and escapes"],
+  ["a?a?a?a?a?aaaaa", "aaaaa", "Russ Cox's benchmark"],
+  ["(x+x+)+y", "xxxxxxxxxxxxxxxxxxxx", "the backtracking trap"],
+];
+
+function loadPreset(p, s) {
+  $("#pattern").value = p; $("#input").value = s;
+  compileAndShow({ autoplay: true });
+}
+
+function drawFigures() {
+  const figs = [
+    ["a", "One state that reads <code>a</code>. Its arrow is left loose until something follows it."],
+    ["ab", "Concatenation aims the first fragment's loose arrow at the second fragment's start."],
+    ["a|b", "Alternation adds a junction with an ε-arrow into each branch."],
+    ["a*", "Star adds a junction that either enters the loop or leaves it."],
+    ["a+", "Plus runs the fragment once, then the junction decides whether to go round again."],
+    ["a?", "Question mark is a junction that can skip the fragment."],
+  ];
+  const box = $("#figs");
+  box.innerHTML = "";
+  for (const [pat, cap] of figs) {
+    const fig = document.createElement("figure");
+    const wrap = document.createElement("div"); wrap.className = "graph";
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `State machine for ${pat}`);
+    wrap.appendChild(svg); fig.appendChild(wrap);
+    const fc = document.createElement("figcaption");
+    fc.innerHTML = `<code>${pat}</code> ${cap}`;
+    fig.appendChild(fc); box.appendChild(fig);
+    const res = engine.compile(pat);
+    drawGraph(svg, res.graph, true);
+    fitSvg(svg, wrap, { max: 1.1, min: 0.5 });
+  }
+}
+
+let debounce;
+function onEdit() { clearTimeout(debounce); debounce = setTimeout(() => compileAndShow({ autoplay: false }), 220); }
+
+async function boot() {
+  await loadEngine();
+  $("#footer").textContent = engineName;
+
+  const box = $("#presets");
+  for (const [p, s, d] of PRESETS) {
+    const b = document.createElement("button");
+    b.className = "preset";
+    b.innerHTML = `<code>${escapeHTML(p)}</code><small>${d}</small>`;
+    b.addEventListener("click", () => loadPreset(p, s));
+    box.appendChild(b);
+  }
+  $("#load-trap").addEventListener("click", () => {
+    loadPreset("(x+x+)+y", "xxxxxxxxxxxxxxxxxxxx");
+    $(".machine").scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  });
+
+  $("#pattern").addEventListener("input", onEdit);
+  $("#input").addEventListener("input", onEdit);
+  $("#b-play").addEventListener("click", () => (S.playing ? stopAll() : play()));
+  $("#b-step").addEventListener("click", () => { const i = S.step; stopAll(); if (i < last()) animateTo(i + 1); });
+  $("#b-back").addEventListener("click", () => { const i = S.step; stopAll(); showStep(Math.max(0, i - 1)); });
+  $("#b-reset").addEventListener("click", () => { stopAll(); showStep(0); });
+  $("#speed").addEventListener("input", (e) => { S.speed = +e.target.value; $("#speed-out").textContent = S.speed + "×"; });
+  $("#tape").addEventListener("click", (e) => {
+    const f = e.target.closest(".frame[data-k]"); if (!f || !S.res) return;
+    const target = +f.dataset.k + 1;
+    if (target <= last()) { stopAll(); showStep(target); }
+  });
+  $("#log").addEventListener("click", (e) => {
+    const c = e.target.closest(".c"); if (!c) return;
+    stopAll(); showStep(+c.dataset.s);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.target.matches("input, textarea") || !S.res || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === " " && e.target.matches("button")) return; // let the focused button handle Space
+    if (e.key === " ") { e.preventDefault(); S.playing ? stopAll() : play(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); $("#b-step").click(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); $("#b-back").click(); }
+    else if (e.key === "Home") { e.preventDefault(); $("#b-reset").click(); }
+    else if (e.key === "End") { e.preventDefault(); stopAll(); showStep(last()); }
+  });
+  new ResizeObserver(() => {
+    if (!S.res) return;
+    fitSvg($("#graph"), $("#graph-wrap"), { maxH: 470, max: 1.6 });
+    $("#tape").style.transition = "none"; updateTape(S.step);
+    requestAnimationFrame(() => ($("#tape").style.transition = ""));
+  }).observe($("#graph-wrap"));
+
+  const h = new URLSearchParams(location.hash.slice(1));
+  $("#pattern").value = h.has("p") ? h.get("p") : PRESETS[0][0];
+  $("#input").value = h.has("s") ? h.get("s") : PRESETS[0][1];
+  drawFigures();
+  compileAndShow({ autoplay: true });
+}
+
+boot();
+</script>
+</body>
+</html>
