@@ -6,9 +6,9 @@ fragments, then simulate every path at once. Matching is linear in the input
 for every pattern, so `(x+x+)+y` can't blow up the way it does in a
 backtracking engine.
 
-`web/` is an interactive page that runs this exact engine (compiled to
-WebAssembly) and animates the state machine reading a string one character
-at a time.
+[blog.swayam.li/projects/thompson](https://blog.swayam.li/projects/thompson)
+runs this exact engine, compiled to WebAssembly, and animates the state
+machine reading a string one character at a time.
 
 ## Supported syntax
 
@@ -49,29 +49,5 @@ go run ./cmd/thompson -dot '(a|b)*abb' | dot -Tsvg > nfa.svg
 | `match.go`         | set-of-states simulation, plus `Trace` for the visualizer       |
 | `graph.go`         | NFA as JSON-ready nodes/edges, and DOT                          |
 | `thompson_test.go` | unit tests, 3,000 random patterns diffed against `regexp`       |
-| `wasm/`            | exposes `thompson.compile` / `thompson.trace` to JavaScript     |
-| `cmd/bundle/`      | inlines everything into one standalone HTML file                |
-
-## Put it on your blog
-
-```sh
-make            # test, build web/main.wasm, build dist/thompson-nfa.html
-```
-
-Pick one:
-
-1. **One file.** Upload `dist/thompson-nfa.html` anywhere and link to it or
-   embed it: `<iframe src="/thompson-nfa.html" style="width:100%;height:1400px;border:0"></iframe>`
-2. **Folder.** Upload `web/` as is (`index.html`, `main.wasm`, `wasm_exec.js`,
-   `vendor/`). Smaller first load because the server can cache `main.wasm`.
-   Serve `.wasm` with any MIME type; the page reads it as bytes.
-
-Link to a specific example with the URL hash:
-`thompson-nfa.html#p=(0|1(01*0)*1)*&s=1001`.
-
-If a host blocks WebAssembly, the page falls back to a JavaScript port of the
-same engine (checked identical against the Go build on 78,000 pattern/input
-pairs) and says so in its footer.
-
-`web/vendor/dagre.min.js` is [dagre](https://github.com/dagrejs/dagre)
-(MIT), used for graph layout.
+| `cmd/wasm/`        | exposes `thompson.compile` / `thompson.trace` to JavaScript     |
+| `cmd/bundle/`      | inlines a `web/` page into one standalone HTML file             |

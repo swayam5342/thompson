@@ -5,7 +5,7 @@
 //	thompson.compile(pattern)       -> JSON {graph} or {error}
 //	thompson.trace(pattern, input)  -> JSON {graph, trace} or {error}
 //
-// Build: GOOS=js GOARCH=wasm go build -o web/main.wasm ./wasm
+// Build: GOOS=js GOARCH=wasm go build -o main.wasm ./cmd/wasm
 package main
 
 import (
